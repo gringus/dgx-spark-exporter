@@ -35,6 +35,16 @@ func NewSystemCollector(cfg *config.Config, logger *slog.Logger) *SystemCollecto
 			"System load average",
 			[]string{"period"}, nil,
 		),
+		load5Desc: prometheus.NewDesc(
+			prometheus.BuildFQName(Namespace, "load", "average"),
+			"System load average",
+			[]string{"period"}, nil,
+		),
+		load15Desc: prometheus.NewDesc(
+			prometheus.BuildFQName(Namespace, "load", "average"),
+			"System load average",
+			[]string{"period"}, nil,
+		),
 		uptimeDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, "system", "uptime_seconds"),
 			"System uptime in seconds",
