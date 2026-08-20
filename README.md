@@ -201,7 +201,7 @@ sudo make service-uninstall  # Remove service
 ### Manual Install
 
 ```bash
-sudo cp dgx-spark-exporter /usr/local/bin/
+sudo cp dgx-spark-exporter /usr/bin/
 sudo cp deploy/dgx-spark-exporter.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dgx-spark-exporter

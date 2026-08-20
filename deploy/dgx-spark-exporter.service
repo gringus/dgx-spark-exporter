@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dgx-spark-exporter -listen :9876
+ExecStart=/usr/bin/dgx-spark-exporter -listen :9876
 Restart=on-failure
 RestartSec=5
 

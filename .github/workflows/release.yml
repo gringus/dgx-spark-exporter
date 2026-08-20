@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  deb-package:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            deb_arch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.23'
+          cache: false
+
+      - name: Get version
+        id: meta
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_without_v=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build \
+            -ldflags "-s -w -X main.Version=${{ steps.meta.outputs.version_without_v }} -X main.Revision=${GITHUB_SHA::8} -X main.Branch=${{ github.ref_name }} -X main.BuildTime=$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            -o dgx-spark-exporter \
+            ./cmd/dgx-spark-exporter
+
+      - name: Build deb package
+        run: |
+          # Determine package architecture name
+          PKG_ARCH="${{ matrix.deb_arch }}"
+
+          # Create debian package directory structure in a temp location to avoid
+          # collision with the project's pkg/ directory containing Go sources
+          mkdir -p deb-pkg/usr/bin
+          mkdir -p deb-pkg/usr/lib/systemd/system
+          mkdir -p deb-pkg/DEBIAN
+
+          # Install binary
+          cp dgx-spark-exporter deb-pkg/usr/bin/
+
+          # Install systemd service
+          cp deploy/dgx-spark-exporter.service deb-pkg/usr/lib/systemd/system/
+
+          # Copy and substitute debian control files
+          sed 's/__VERSION__/${{ steps.meta.outputs.version_without_v }}/g;
+               s/__MAINTAINER__/${{ github.actor }}/g;
+               s/__PKG_ARCH__/'"$PKG_ARCH"'/g' \
+            debian/control > deb-pkg/DEBIAN/control
+
+          # Copy and make scripts executable
+          cp debian/postinst deb-pkg/DEBIAN/postinst
+          cp debian/prerm deb-pkg/DEBIAN/prerm
+          cp debian/postrm deb-pkg/DEBIAN/postrm
+          chmod +x deb-pkg/DEBIAN/postinst deb-pkg/DEBIAN/prerm deb-pkg/DEBIAN/postrm
+
+          # Build the package with fakeroot to ensure root ownership
+          apt-get install -y fakeroot > /dev/null 2>&1 || true
+          fakeroot dpkg-deb --build deb-pkg "dgx-spark-exporter_${{ steps.meta.outputs.version_without_v }}_${PKG_ARCH}.deb"
+
+      - name: Upload release artifact
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dgx-spark-exporter_${{ steps.meta.outputs.version_without_v }}_${{ matrix.deb_arch }}.deb
+          draft: false
+          prerelease: ${{ contains(github.ref, 'rc') || contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

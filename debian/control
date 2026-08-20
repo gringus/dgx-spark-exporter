@@ -1,0 +1,10 @@
+Package: dgx-spark-exporter
+Version: __VERSION__
+Section: utils
+Priority: optional
+Architecture: arm64
+Depends: libc6 (>= 2.32)
+Maintainer: __MAINTAINER__
+Description: A Prometheus exporter for NVIDIA DGX systems
+  DGX Spark Exporter collects GPU, CPU, memory, disk, network,
+  power, and storage metrics from NVIDIA DGX systems.

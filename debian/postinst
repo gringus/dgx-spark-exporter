@@ -1,0 +1,4 @@
+#!/bin/sh
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable dgx-spark-exporter 2>/dev/null || true
+systemctl start dgx-spark-exporter 2>/dev/null || true

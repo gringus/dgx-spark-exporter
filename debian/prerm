@@ -1,0 +1,2 @@
+#!/bin/sh
+systemctl --no-reload disable --now dgx-spark-exporter 2>/dev/null || true
