@@ -33,7 +33,7 @@ func NewCPUCollector(cfg *config.Config, logger *slog.Logger) *CPUCollector {
 		usageDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, "cpu", "usage_ratio"),
 			"CPU usage ratio (0-1)",
-			nil, nil,
+			[]string{"cpu"}, nil,
 		),
 		tempDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, "cpu", "temperature_celsius"),
@@ -42,8 +42,8 @@ func NewCPUCollector(cfg *config.Config, logger *slog.Logger) *CPUCollector {
 		),
 		freqDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, "cpu", "frequency_hertz"),
-			"Average CPU core frequency in Hz",
-			nil, nil,
+			"CPU core frequency in Hz",
+			[]string{"cpu"}, nil,
 		),
 		timeDesc: prometheus.NewDesc(
 			prometheus.BuildFQName(Namespace, "cpu", "time_seconds_total"),
@@ -55,7 +55,7 @@ func NewCPUCollector(cfg *config.Config, logger *slog.Logger) *CPUCollector {
 			"Number of CPU cores",
 			nil, nil,
 		),
-		prevStats:    make(map[string]uint64),
+		prevStats:    make(map[string]uint64, cfg.MaxCPUCount*2),
 		thermalZones: cfg.ThermalZoneCount,
 		maxCPUs:      cfg.MaxCPUCount,
 		logger:       logger.With("collector", "cpu"),
@@ -87,49 +87,54 @@ func (c *CPUCollector) collectUsage(ch chan<- prometheus.Metric) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	if !scanner.Scan() {
-		return
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) < 8 || !strings.HasPrefix(fields[0], "cpu") {
+			continue
+		}
+
+		cpuName := fields[0]
+		// Skip aggregate "cpu" line, only report per-core
+		if cpuName == "cpu" {
+			continue
+		}
+		// Strip "cpu" prefix to get just the core ID (e.g., "cpu0" -> "0")
+		cpuID := strings.TrimPrefix(cpuName, "cpu")
+		user := parseUintOrZero(fields[1])
+		nice := parseUintOrZero(fields[2])
+		system := parseUintOrZero(fields[3])
+		idle := parseUintOrZero(fields[4])
+		iowait := parseUintOrZero(fields[5])
+		irq := parseUintOrZero(fields[6])
+		softirq := parseUintOrZero(fields[7])
+
+		total := user + nice + system + idle + iowait + irq + softirq
+		idleTotal := idle + iowait
+
+		c.mu.Lock()
+		prevTotal := c.prevStats[cpuName+"_total"]
+		prevIdle := c.prevStats[cpuName+"_idle"]
+		c.prevStats[cpuName+"_total"] = total
+		c.prevStats[cpuName+"_idle"] = idleTotal
+		c.mu.Unlock()
+
+		if prevTotal == 0 {
+			ch <- prometheus.MustNewConstMetric(c.usageDesc, prometheus.GaugeValue, 0, cpuID)
+			continue
+		}
+
+		totalDelta := total - prevTotal
+		idleDelta := idleTotal - prevIdle
+
+		if totalDelta == 0 {
+			ch <- prometheus.MustNewConstMetric(c.usageDesc, prometheus.GaugeValue, 0, cpuID)
+			continue
+		}
+
+		usage := float64(totalDelta-idleDelta) / float64(totalDelta)
+		ch <- prometheus.MustNewConstMetric(c.usageDesc, prometheus.GaugeValue, usage, cpuID)
 	}
-
-	line := scanner.Text()
-	fields := strings.Fields(line)
-	if len(fields) < 8 || fields[0] != "cpu" {
-		return
-	}
-
-	user := parseUintOrZero(fields[1])
-	nice := parseUintOrZero(fields[2])
-	system := parseUintOrZero(fields[3])
-	idle := parseUintOrZero(fields[4])
-	iowait := parseUintOrZero(fields[5])
-	irq := parseUintOrZero(fields[6])
-	softirq := parseUintOrZero(fields[7])
-
-	total := user + nice + system + idle + iowait + irq + softirq
-	idleTotal := idle + iowait
-
-	c.mu.Lock()
-	prevTotal := c.prevStats["total"]
-	prevIdle := c.prevStats["idle"]
-	c.prevStats["total"] = total
-	c.prevStats["idle"] = idleTotal
-	c.mu.Unlock()
-
-	if prevTotal == 0 {
-		ch <- prometheus.MustNewConstMetric(c.usageDesc, prometheus.GaugeValue, 0)
-		return
-	}
-
-	totalDelta := total - prevTotal
-	idleDelta := idleTotal - prevIdle
-
-	if totalDelta == 0 {
-		ch <- prometheus.MustNewConstMetric(c.usageDesc, prometheus.GaugeValue, 0)
-		return
-	}
-
-	usage := float64(totalDelta-idleDelta) / float64(totalDelta)
-	ch <- prometheus.MustNewConstMetric(c.usageDesc, prometheus.GaugeValue, usage)
 }
 
 func (c *CPUCollector) collectTemperatures(ch chan<- prometheus.Metric) {
@@ -177,28 +182,15 @@ func (c *CPUCollector) collectTemperatures(ch chan<- prometheus.Metric) {
 }
 
 func (c *CPUCollector) collectFrequency(ch chan<- prometheus.Metric) {
-	var totalFreq float64
-	count := 0
-
 	for i := 0; i < c.maxCPUs; i++ {
 		path := fmt.Sprintf("/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq", i)
 		freqKHz, err := utils.ReadFileFloat(path)
 		if err != nil {
-			if i == 0 {
-				return
-			}
-			break
+			continue
 		}
-		totalFreq += freqKHz
-		count++
+		freqHz := freqKHz * 1000.0
+		ch <- prometheus.MustNewConstMetric(c.freqDesc, prometheus.GaugeValue, freqHz, fmt.Sprintf("%d", i))
 	}
-
-	if count == 0 {
-		return
-	}
-
-	avgFreq := totalFreq / float64(count) * 1000.0
-	ch <- prometheus.MustNewConstMetric(c.freqDesc, prometheus.GaugeValue, avgFreq)
 }
 
 func (c *CPUCollector) collectCPUTime(ch chan<- prometheus.Metric) {
